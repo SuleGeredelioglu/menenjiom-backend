@@ -21,7 +21,7 @@ namespace MenengiomaBackend.Models
         // Yapay zekanın (TTS) ürettiği ses kaydı (PostgreSQL'de bytea olarak tutulur)
         public byte[]? TtsVoiceData { get; set; }
 
-        // Ses dosyasının formatı (Örn: "m4a", "mp3") - İleride oynatırken lazım olur
+        // Ses dosyasının formatı
         [StringLength(10)]
         public string AudioFormat { get; set; } = "m4a";
 

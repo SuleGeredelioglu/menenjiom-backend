@@ -1,38 +1,36 @@
 using MenengiomaBackend.Data;
 using MenengiomaBackend.Models;
 using MenengiomaBackend.DTOs;
+using MenengiomaBackend.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Http;
 
 namespace MenengiomaBackend.Controllers
 {
-    // API rotasını belirler (api/SeriesFile)
     [Route("api/[controller]")]
     [ApiController]
     public class SeriesFileController : ControllerBase
     {
         private readonly AppDbContext _context;
+        private readonly AiIntegrationService _aiService;
 
-        // Veritabanı bağlamını (context) constructor üzerinden enjekte eder
-        public SeriesFileController(AppDbContext context)
+        public SeriesFileController(AppDbContext context, AiIntegrationService aiService)
         {
             _context = context;
+            _aiService = aiService;
         }
 
-        // 1. Yeni Dosya/Sonuç Ekleme
-        // Flutter'dan gelen analiz sonuçlarını ve raporu veritabanına kaydeder
+        // 1. Yeni Dosya/Sonuç Ekleme (Manuel)
         [HttpPost]
         public async Task<IActionResult> AddSeriesFile(SeriesFileCreateDto request)
         {
-            // Veri bütünlüğü için veritabanında belirtilen MR çekiminin (Study) varlığını kontrol eder
             var studyExists = await _context.Studies.AnyAsync(s => s.StudyID == request.StudyID);
             if (!studyExists)
             {
-                // Hata mesajını da JSON formatında dönmek, modern API'ler için daha sağlıklıdır.
                 return NotFound(new { message = "Hata: Belirtilen ID'ye sahip bir MR çekimi bulunamadı!" });
             }
 
-            // DTO'dan gelen verileri gerçek veritabanı modeline (Entity) eşler
             var newSeriesFile = new SeriesFile
             {
                 StudyID = request.StudyID,
@@ -43,13 +41,9 @@ namespace MenengiomaBackend.Controllers
                 IsProcessed = request.IsProcessed
             };
 
-            // Yeni kaydı tabloya ekler ve değişiklikleri diske yazar
             _context.SeriesFiles.Add(newSeriesFile);
             await _context.SaveChangesAsync();
 
-            // KODUN GÜNCELLENEN TEK KISMI:
-            // İşlem başarılıysa yeni oluşturulan kaydın ID'sini JSON formatında döndürür.
-            // Bu sayede Flutter tarafındaki jsonDecode(response.body) fonksiyonu sorunsuz çalışır.
             return Ok(new
             {
                 seriesID = newSeriesFile.SeriesID,
@@ -57,24 +51,91 @@ namespace MenengiomaBackend.Controllers
             });
         }
 
-        // 2. Belirli Bir MR Çekimine Ait Dosyaları/Sonuçları Getirme
-        // "Geçmiş Raporlar" ekranı için ilgili tetkike ait tüm kayıtları listeler
+        // 2. Belirli Bir MR Çekimine Ait Dosyaları Getirme
         [HttpGet("study/{studyId}")]
         public async Task<IActionResult> GetFilesByStudy(int studyId)
         {
-            // StudyID eşleşmesine göre ilgili tüm raporları sorgular
             var files = await _context.SeriesFiles
                 .Where(f => f.StudyID == studyId)
                 .ToListAsync();
 
-            // Eğer listede hiç kayıt yoksa kullanıcıya bilgi mesajı döner
             if (!files.Any())
             {
                 return NotFound(new { message = "Bu MR çekimine ait herhangi bir dosya kaydı bulunamadı." });
             }
 
-            // Kayıtlar bulunduysa JSON formatında listeyi döndürür
             return Ok(files);
+        }
+
+        // -------------------------------------------------------------------
+        // 3. YAPAY ZEKA ENTEGRASYONU (ÜSTÜNE YAZMA SORUNU ÇÖZÜLDÜ)
+        // -------------------------------------------------------------------
+        [HttpPost("{studyId}/analyze")]
+        public async Task<IActionResult> AnalyzeAndSaveAiReport(int studyId, IFormFile mriZipFile)
+        {
+            if (mriZipFile == null || mriZipFile.Length == 0)
+                return BadRequest(new { message = "Lütfen analiz için geçerli bir DICOM ZIP dosyası yükleyin." });
+
+            // ÇOK ÖNEMLİ: Artık eski dosyayı aramıyoruz, YENİ bir satır (kayıt) oluşturuyoruz!
+            // Flutter'dan gelen ID'yi artık "StudyID" (Çekim Grubu ID'si) olarak kullanıyoruz.
+            var newSeriesFile = new SeriesFile
+            {
+                StudyID = studyId,
+                FilePath_Original = mriZipFile.FileName,
+                IsProcessed = false // İşlem yeni başladı
+            };
+
+            // Önce yeni satırı veritabanına ekle ki otomatik bir SeriesID (Örn: 2, 3, 4) alsın
+            _context.SeriesFiles.Add(newSeriesFile);
+            await _context.SaveChangesAsync();
+
+            try
+            {
+                // Python AI servisine gönder
+                var aiResult = await _aiService.AnalyzeMriAsync(mriZipFile);
+
+                // AI analizi bittikten sonra yeni oluşturduğumuz satırı sonuçlarla güncelliyoruz
+                if (aiResult?.Volumes_cm3 != null)
+                {
+                    newSeriesFile.TumorVolume = (float)aiResult.Volumes_cm3.Total_wt;
+                    newSeriesFile.FilePath_Mask = aiResult.Mask_file_path;
+                    newSeriesFile.IsProcessed = true; // İşlem bitti
+
+                    newSeriesFile.AiReportContent = $"Otomatik Analiz Sonucu: Nekrotik Çekirdek {aiResult.Volumes_cm3.Ncr} cm³, " +
+                                                 $"Ödem {aiResult.Volumes_cm3.Ed} cm³, Aktif Tümör {aiResult.Volumes_cm3.Et} cm³.";
+
+                    _context.SeriesFiles.Update(newSeriesFile);
+                    await _context.SaveChangesAsync();
+                }
+
+                // Flutter'a yanıt dön
+                return Ok(new
+                {
+                    status = "success",
+                    message = "Yapay zeka analizi başarıyla tamamlandı.",
+                    series_id = newSeriesFile.SeriesID, // Yeni oluşturulan ID'yi de dönüyoruz
+                    data = new
+                    {
+                        volumes_cm3 = new
+                        {
+                            ncr = aiResult?.Volumes_cm3?.Ncr ?? 0,
+                            ed = aiResult?.Volumes_cm3?.Ed ?? 0,
+                            et = aiResult?.Volumes_cm3?.Et ?? 0,
+                            total_wt = aiResult?.Volumes_cm3?.Total_wt ?? 0
+                        },
+                        mask_file_path = aiResult?.Mask_file_path
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                // Eğer yapay zeka hata verirse, oluşturduğumuz satıra hata durumunu yazabiliriz
+                newSeriesFile.AiReportContent = $"Analiz Hatası: {ex.Message}";
+                _context.SeriesFiles.Update(newSeriesFile);
+                await _context.SaveChangesAsync();
+
+                return StatusCode(500, new { message = $"AI Sunucusu ile iletişim hatası: {ex.Message}" });
+            }
         }
     }
 }

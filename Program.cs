@@ -1,5 +1,6 @@
 using MenengiomaBackend.Data;
 using Microsoft.EntityFrameworkCore;
+using MenengiomaBackend.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 // CORS politikasını ekliyoruz
@@ -20,6 +21,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 
 // 2. EKSİK OLAN SATIR: Projeye Controller kullanacağımızı söylüyoruz
 builder.Services.AddControllers();
+builder.Services.AddHttpClient<AiIntegrationService>();
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
