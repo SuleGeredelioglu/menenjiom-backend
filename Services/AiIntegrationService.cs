@@ -11,7 +11,7 @@ namespace MenengiomaBackend.Services
         public AiIntegrationService(HttpClient httpClient)
         {
             _httpClient = httpClient;
-            _httpClient.BaseAddress = new Uri("http://localhost:8000/");
+            _httpClient.BaseAddress = new Uri("http://localhost:5000/");
         }
 
         public async Task<AiAnalysisResultDto> AnalyzeMriAsync(IFormFile zipFile)

@@ -21,7 +21,6 @@ namespace MenengiomaBackend.Controllers
             _aiService = aiService;
         }
 
-        // 1. Yeni Dosya/Sonuç Ekleme (Manuel)
         [HttpPost]
         public async Task<IActionResult> AddSeriesFile(SeriesFileCreateDto request)
         {
@@ -51,7 +50,6 @@ namespace MenengiomaBackend.Controllers
             });
         }
 
-        // 2. Belirli Bir MR Çekimine Ait Dosyaları Getirme
         [HttpGet("study/{studyId}")]
         public async Task<IActionResult> GetFilesByStudy(int studyId)
         {
@@ -67,53 +65,44 @@ namespace MenengiomaBackend.Controllers
             return Ok(files);
         }
 
-        // -------------------------------------------------------------------
-        // 3. YAPAY ZEKA ENTEGRASYONU (ÜSTÜNE YAZMA SORUNU ÇÖZÜLDÜ)
-        // -------------------------------------------------------------------
         [HttpPost("{studyId}/analyze")]
         public async Task<IActionResult> AnalyzeAndSaveAiReport(int studyId, IFormFile mriZipFile)
         {
             if (mriZipFile == null || mriZipFile.Length == 0)
                 return BadRequest(new { message = "Lütfen analiz için geçerli bir DICOM ZIP dosyası yükleyin." });
 
-            // ÇOK ÖNEMLİ: Artık eski dosyayı aramıyoruz, YENİ bir satır (kayıt) oluşturuyoruz!
-            // Flutter'dan gelen ID'yi artık "StudyID" (Çekim Grubu ID'si) olarak kullanıyoruz.
             var newSeriesFile = new SeriesFile
             {
                 StudyID = studyId,
                 FilePath_Original = mriZipFile.FileName,
-                IsProcessed = false // İşlem yeni başladı
+                IsProcessed = false 
             };
 
-            // Önce yeni satırı veritabanına ekle ki otomatik bir SeriesID (Örn: 2, 3, 4) alsın
             _context.SeriesFiles.Add(newSeriesFile);
             await _context.SaveChangesAsync();
 
             try
             {
-                // Python AI servisine gönder
                 var aiResult = await _aiService.AnalyzeMriAsync(mriZipFile);
 
-                // AI analizi bittikten sonra yeni oluşturduğumuz satırı sonuçlarla güncelliyoruz
                 if (aiResult?.Volumes_cm3 != null)
                 {
                     newSeriesFile.TumorVolume = (float)aiResult.Volumes_cm3.Total_wt;
                     newSeriesFile.FilePath_Mask = aiResult.Mask_file_path;
-                    newSeriesFile.IsProcessed = true; // İşlem bitti
+                    newSeriesFile.IsProcessed = true; 
 
                     newSeriesFile.AiReportContent = $"Otomatik Analiz Sonucu: Nekrotik Çekirdek {aiResult.Volumes_cm3.Ncr} cm³, " +
-                                                 $"Ödem {aiResult.Volumes_cm3.Ed} cm³, Aktif Tümör {aiResult.Volumes_cm3.Et} cm³.";
+                                                     $"Ödem {aiResult.Volumes_cm3.Ed} cm³, Aktif Tümör {aiResult.Volumes_cm3.Et} cm³.";
 
                     _context.SeriesFiles.Update(newSeriesFile);
                     await _context.SaveChangesAsync();
                 }
 
-                // Flutter'a yanıt dön
                 return Ok(new
                 {
                     status = "success",
                     message = "Yapay zeka analizi başarıyla tamamlandı.",
-                    series_id = newSeriesFile.SeriesID, // Yeni oluşturulan ID'yi de dönüyoruz
+                    series_id = newSeriesFile.SeriesID, 
                     data = new
                     {
                         volumes_cm3 = new
@@ -129,7 +118,6 @@ namespace MenengiomaBackend.Controllers
             }
             catch (Exception ex)
             {
-                // Eğer yapay zeka hata verirse, oluşturduğumuz satıra hata durumunu yazabiliriz
                 newSeriesFile.AiReportContent = $"Analiz Hatası: {ex.Message}";
                 _context.SeriesFiles.Update(newSeriesFile);
                 await _context.SaveChangesAsync();
